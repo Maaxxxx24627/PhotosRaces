@@ -1,4 +1,11 @@
 import streamlit as st
+
+import streamlit.elements.image as st_image
+if not hasattr(st_image, "image_to_url"):
+    import streamlit.runtime.media_file_storage as mfs
+    st_image.image_to_url = mfs.concat_media_path_and_url
+# ----------------------------------------------
+
 import cv2
 import numpy as np
 import requests
@@ -80,16 +87,15 @@ if img_source:
 
                 # 2. Conversion de l'image d'origine pour OpenCV
                 img_cv = np.array(img_source)
-                if img_cv.shape[2] == 4:
+                if img_cv.shape[-1] == 4:
                     img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGBA2RGB)
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
 
                 # 3. Application de l'Inpainting algorithmique ciblé
-                # Augmenter le rayon (ex: 7) aide à combler les filigranes épais
                 dst = cv2.inpaint(img_cv, mask, 7, cv2.INPAINT_TELEA)
                 cleaned_img = cv2.cvtColor(dst, cv2.COLOR_BGR2RGB)
 
-                # 4. Upscaling local (LANCZOS4 pour préserver les textures de la trifonction et du visage)
+                # 4. Upscaling local (LANCZOS4 pour préserver les textures)
                 width = int(orig_w * 2)
                 height = int(orig_h * 2)
                 final_cv = cv2.resize(cleaned_img, (width, height), interpolation=cv2.INTER_LANCZOS4)
