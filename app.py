@@ -5,25 +5,11 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 from io import BytesIO
-import base64
-from streamlit_drawable_canvas import st_canvas
-
-# --- PATCH DE SÉCURITÉ POUR ST_CANVAS ---
-# Convertit proprement l'image PIL en Base64 pour éviter le bug 'image_to_url' de Streamlit
-import streamlit.elements.image as st_image
-if not hasattr(st_image, "image_to_url"):
-    def mock_image_to_url(image, width, clamp, channels, format, image_id):
-        buffered = BytesIO()
-        image.save(buffered, format="PNG")
-        img_str = base64.b64encode(buffered.getvalue()).decode()
-        return f"data:image/png;base64,{img_str}"
-    st_image.image_to_url = mock_image_to_url
-# ----------------------------------------
 
 st.set_page_config(page_title="Triathlon Photo Local", page_icon="🚴", layout="centered")
-st.title("🚴 Tri-Photo Clean Local (Illimité)")
+st.title("🚴 Tri-Photo Clean Local (Version Stable)")
 
-# --- SOURCE SELECTION ---
+# --- INTERFACE D'IMPORTATION ---
 source_option = st.radio("Méthode d'importation :", ("Coller un lien / URL", "Charger un fichier depuis mon PC"), horizontal=True)
 img_source = None
 
@@ -54,71 +40,59 @@ else:
     if uploaded_file is not None:
         img_source = Image.open(uploaded_file)
 
-# --- CONFIGURATION DE LA BROSSE ---
+# --- TRAITEMENT ET REGLAGES ---
 if img_source:
-    st.success("Image chargée ! Utilisez la souris pour colorier les filigranes ci-dessous.")
+    st.success("Image chargée avec succès !")
     
-    # Ajustement de la taille de l'affichage pour le dessin
-    orig_w, orig_h = img_source.size
-    max_width = 600
-    display_w = max_width
-    display_h = int(orig_h * (max_width / orig_w))
-    img_resized = img_source.resize((display_w, display_h))
+    # Préparation des images au format OpenCV
+    img_np = np.array(img_source)
+    if img_np.shape[-1] == 4:
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2RGB)
+    img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
 
-    stroke_width = st.slider("Taille de la brosse d'effacement :", 5, 50, 15)
+    st.subheader("🎛️ Réglages du filtre de détection")
+    st.write("Ajustez les curseurs pour cibler le texte du filigrane sans toucher au reste de la photo.")
 
-    st.write("✏️ **Coloriez grossièrement les écritures 'PHOTO Running' :**")
+    # Curseurs pour ajuster précisément la détection du filigrane transparent
+    sensibilite = st.slider("Seuil de détection du blanc (Plus bas = détecte plus de transparence)", 150, 255, 200)
+    epaisseur = st.slider("Élargissement de la zone de gommage (Taille des lettres)", 1, 10, 3)
+
+    # Création du masque basé sur l'ajustement de l'utilisateur
+    _, mask = cv2.threshold(gray, sensibilite, 255, cv2.THRESH_BINARY)
     
-    # Zone de dessin interactive
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # Couleur orange transparente pour voir où on dessine
-        stroke_width=stroke_width,
-        stroke_color="#FFFFFF",
-        background_image=img_resized,
-        update_streamlit=True,
-        height=display_h,
-        width=display_w,
-        drawing_mode="freedraw",
-        key="canvas",
-    )
+    # Dilatation du masque pour englober les bords des lettres texturées
+    kernel = np.ones((epaisseur, epaisseur), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=1)
 
-    # --- TRAITEMENT LOCAL ---
-    if st.button("🚀 Effacer le filigrane dessiné et Upscaler"):
-        if canvas_result.image_data is not None:
-            with st.spinner("Calculs de reconstruction en cours..."):
-                # 1. Préparation du masque créé par l'utilisateur
-                mask = canvas_result.image_data[:, :, 3] # Récupère la couche alpha du dessin
-                mask = cv2.resize(mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-                _, mask = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+    # Affichage du masque pour que l'utilisateur comprenne ce qui va être effacé (les zones blanches)
+    st.write("👁️ **Zone détectée (en blanc) :**")
+    st.image(mask, caption="Le texte du filigrane doit apparaître clairement en blanc ici", use_container_width=True)
 
-                # 2. Conversion de l'image d'origine pour OpenCV
-                img_cv = np.array(img_source)
-                if img_cv.shape[-1] == 4:
-                    img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGBA2RGB)
-                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
+    # --- BOUTON DE LANCEMENT ---
+    if st.button("🚀 Lancer la reconstruction de la photo et l'Upscale"):
+        with st.spinner("L'algorithme reconstruit les textures cachées sous le filigrane..."):
+            # 1. Inpainting mathématique basé sur le masque ajusté
+            dst = cv2.inpaint(img_cv, mask, 5, cv2.INPAINT_TELEA)
+            cleaned_img = cv2.cvtColor(dst, cv2.COLOR_BGR2RGB)
 
-                # 3. Application de l'Inpainting algorithmique ciblé
-                dst = cv2.inpaint(img_cv, mask, 7, cv2.INPAINT_TELEA)
-                cleaned_img = cv2.cvtColor(dst, cv2.COLOR_BGR2RGB)
+            # 2. Super-Résolution locale (X2) pour contrer la perte de qualité
+            orig_w, orig_h = img_source.size
+            width = int(orig_w * 2)
+            height = int(orig_h * 2)
+            final_cv = cv2.resize(cleaned_img, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            final_img = Image.fromarray(final_cv)
 
-                # 4. Upscaling local (LANCZOS4 pour préserver les textures)
-                width = int(orig_w * 2)
-                height = int(orig_h * 2)
-                final_cv = cv2.resize(cleaned_img, (width, height), interpolation=cv2.INTER_LANCZOS4)
-                final_img = Image.fromarray(final_cv)
+        # Affichage du résultat final
+        st.subheader("✨ Votre Photo Propre et Boostée")
+        st.image(final_img, use_container_width=True)
 
-            # Affichage du résultat final
-            st.subheader("✨ Résultat Nettoyé et Boosté")
-            st.image(final_img, use_container_width=True)
-
-            # Bouton de téléchargement
-            buf = BytesIO()
-            final_img.save(buf, format="JPEG", quality=98)
-            st.download_button(
-                label="📥 Télécharger ma photo HD propre",
-                data=buf.getvalue(),
-                file_name="triathlon_resultat.jpg",
-                mime="image/jpeg"
-            )
-        else:
-            st.warning("Veuillez d'abord dessiner sur le filigrane avant de lancer le traitement.")
+        # Préparation du téléchargement
+        buf = BytesIO()
+        final_img.save(buf, format="JPEG", quality=98)
+        st.download_button(
+            label="📥 Télécharger mon image HD",
+            data=buf.getvalue(),
+            file_name="triathlon_hd_propre.jpg",
+            mime="image/jpeg"
+        )
