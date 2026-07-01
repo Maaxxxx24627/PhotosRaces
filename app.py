@@ -1,18 +1,24 @@
 import streamlit as st
-
-import streamlit.elements.image as st_image
-if not hasattr(st_image, "image_to_url"):
-    import streamlit.runtime.media_file_storage as mfs
-    st_image.image_to_url = mfs.concat_media_path_and_url
-# ----------------------------------------------
-
 import cv2
 import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 from io import BytesIO
+import base64
 from streamlit_drawable_canvas import st_canvas
+
+# --- PATCH DE SÉCURITÉ POUR ST_CANVAS ---
+# Convertit proprement l'image PIL en Base64 pour éviter le bug 'image_to_url' de Streamlit
+import streamlit.elements.image as st_image
+if not hasattr(st_image, "image_to_url"):
+    def mock_image_to_url(image, width, clamp, channels, format, image_id):
+        buffered = BytesIO()
+        image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        return f"data:image/png;base64,{img_str}"
+    st_image.image_to_url = mock_image_to_url
+# ----------------------------------------
 
 st.set_page_config(page_title="Triathlon Photo Local", page_icon="🚴", layout="centered")
 st.title("🚴 Tri-Photo Clean Local (Illimité)")
